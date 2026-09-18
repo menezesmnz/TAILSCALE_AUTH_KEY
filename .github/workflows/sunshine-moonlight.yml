@@ -1,4 +1,3 @@
-
 name: Windows Cloud PC - Sunshine Moonlight
 
 on:
@@ -110,16 +109,21 @@ jobs:
 
           $origin = "https://${ip}:47990"
 
-          $content = ""
+          # CORREÇÃO: garantir que $content seja uma string
+          [string]$content = ""
 
           if (Test-Path $configFile) {
-            $content = Get-Content $configFile -Raw
+            $content = [string](Get-Content `
+              $configFile `
+              -Raw `
+              -ErrorAction SilentlyContinue)
           }
 
           $content = $content -replace `
             '(?m)^\s*csrf_allowed_origins\s*=.*\r?\n?', ''
 
-          $content = $content.TrimEnd() +
+          # CORREÇÃO: agora TrimEnd() é aplicado em uma string
+          $content = ([string]$content).TrimEnd() +
             "`r`ncsrf_allowed_origins = $origin`r`n"
 
           Set-Content -Path $configFile `
@@ -236,4 +240,3 @@ jobs:
 
             Start-Sleep -Seconds 300
           }
-          
