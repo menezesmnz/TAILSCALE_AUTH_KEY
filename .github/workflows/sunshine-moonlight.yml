@@ -1,3 +1,4 @@
+
 name: Windows Cloud PC - Sunshine Moonlight
 
 on:
@@ -7,10 +8,9 @@ jobs:
   moonlight:
     name: Start Sunshine Moonlight
     runs-on: windows-latest
-    timeout-minutes: 10080
+    timeout-minutes: 20090
 
     steps:
-
       - name: Install Tailscale
         shell: powershell
         run: |
@@ -25,19 +25,30 @@ jobs:
 
           Remove-Item $installer -Force
 
-
       - name: Connect Tailscale
         shell: powershell
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-            --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" `
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+            throw "Tailscale não encontrado."
+          }
+
+          if (-not $env:TAILSCALE_AUTH_KEY) {
+            throw "Secret TAILSCALE_AUTH_KEY não configurado."
+          }
+
+          & $tailscale up `
+            --authkey="$env:TAILSCALE_AUTH_KEY" `
             --hostname="moonlight-$env:GITHUB_RUN_ID"
 
           $ip = $null
 
-          for ($i = 1; $i -le 20; $i++) {
-
-            $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
+          for ($i = 1; $i -le 30; $i++) {
+            $ip = (& $tailscale ip -4 2>$null |
+              Select-Object -First 1).Trim()
 
             if ($ip) {
               break
@@ -47,15 +58,13 @@ jobs:
           }
 
           if (-not $ip) {
-            throw "Não foi possível obter o IP do Tailscale."
+            throw "Não foi possível obter IP do Tailscale."
           }
 
-          "TAILSCALE_IP=$ip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "TAILSCALE_IP=$ip" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "======================================"
-          Write-Host "TAILSCALE IP: $ip"
-          Write-Host "======================================"
-
+          Write-Host "IP Tailscale: $ip"
 
       - name: Install Sunshine
         shell: powershell
@@ -65,65 +74,53 @@ jobs:
 
           Invoke-WebRequest -Uri $url -OutFile $installer
 
-          Start-Process msiexec.exe `
+          $process = Start-Process msiexec.exe `
             -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" `
-            -Wait
+            -Wait -PassThru
 
-          Remove-Item $installer -Force
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
+          if ($process.ExitCode -ne 0) {
+            throw "Falha ao instalar Sunshine."
+          }
 
       - name: Configure Sunshine CSRF
         shell: powershell
         run: |
+          $ip = $env:TAILSCALE_IP
+
+          if (-not $ip) {
+            throw "IP do Tailscale não encontrado."
+          }
 
           $configDir = "$env:ProgramFiles\Sunshine\config"
           $configFile = "$configDir\sunshine.conf"
 
-          Write-Host "Configurando Sunshine..."
+          New-Item -ItemType Directory `
+            -Force -Path $configDir | Out-Null
 
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $configDir | Out-Null
+          $origin = "https://${ip}:47990"
 
-          # Para o serviço antes de alterar a configuração
-          Stop-Service `
-            -Name "SunshineService" `
-            -Force `
-            -ErrorAction SilentlyContinue
+          $content = ""
 
-          Start-Sleep -Seconds 3
-
-          # Remove configuração CSRF anterior, caso exista
           if (Test-Path $configFile) {
-
-            $content = Get-Content $configFile
-
-            $content = $content | Where-Object {
-              $_ -notmatch '^\s*csrf_allowed_origins\s*='
-            }
-
-            Set-Content `
-              -Path $configFile `
-              -Value $content `
-              -Encoding UTF8
+            $content = Get-Content $configFile -Raw
           }
 
-          # Permite acesso pelo IP do Tailscale
-          Add-Content `
-            -Path $configFile `
-            -Value "csrf_allowed_origins = https://$env:TAILSCALE_IP:47990"
+          $content = $content -replace `
+            '(?m)^\s*csrf_allowed_origins\s*=.*\r?\n?', ''
 
-          Write-Host "CSRF configurado para:"
-          Write-Host "https://$env:TAILSCALE_IP:47990"
+          $content += "`r`ncsrf_allowed_origins = $origin`r`n"
 
+          Set-Content -Path $configFile `
+            -Value $content -Encoding utf8
+
+          Write-Host "CSRF configurado: $origin"
+          Write-Host "Arquivo: $configFile"
 
       - name: Configure Windows Firewall
         shell: powershell
         run: |
-
-          Write-Host "Configurando Firewall..."
-
           New-NetFirewallRule `
             -DisplayName "Sunshine TCP" `
             -Direction Inbound `
@@ -142,81 +139,89 @@ jobs:
 
           Write-Host "Firewall configurado."
 
-
       - name: Start Sunshine
         shell: powershell
         run: |
+          $paths = @(
+            "$env:ProgramFiles\Sunshine\sunshine.exe",
+            "$env:ProgramFiles\Sunshine\bin\sunshine.exe"
+          )
 
-          Write-Host "Iniciando Sunshine..."
+          $sunshine = $paths |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
 
-          Start-Service `
-            -Name "SunshineService" `
-            -ErrorAction Stop
+          if (-not $sunshine) {
+            $sunshine = Get-ChildItem `
+              -Path "$env:ProgramFiles" `
+              -Filter "sunshine.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $sunshine) {
+            throw "sunshine.exe não foi encontrado."
+          }
+
+          Write-Host "Executável: $sunshine"
+
+          Start-Process $sunshine
 
           Start-Sleep -Seconds 10
 
-          $service = Get-Service `
-            -Name "SunshineService" `
-            -ErrorAction SilentlyContinue
-
-          if (-not $service) {
-            throw "Serviço Sunshine não encontrado."
+          if (-not (Get-Process sunshine `
+            -ErrorAction SilentlyContinue)) {
+            throw "Sunshine não iniciou."
           }
 
-          if ($service.Status -ne "Running") {
-            throw "Sunshine não iniciou corretamente."
-          }
-
-          Write-Host "======================================"
           Write-Host "Sunshine está rodando."
-          Write-Host "======================================"
-
 
       - name: Show Connection Information
         shell: powershell
         run: |
-
           Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "          MOONLIGHT / SUNSHINE"
-          Write-Host "=============================================="
+          Write-Host "======================================"
+          Write-Host "       SUNSHINE / MOONLIGHT"
+          Write-Host "======================================"
           Write-Host ""
           Write-Host "IP Tailscale:"
           Write-Host "$env:TAILSCALE_IP"
           Write-Host ""
-          Write-Host "No Moonlight, adicione:"
+          Write-Host "Adicionar no Moonlight:"
           Write-Host "$env:TAILSCALE_IP"
           Write-Host ""
           Write-Host "Painel Sunshine:"
-          Write-Host "https://$env:TAILSCALE_IP:47990"
+          Write-Host "https://$env:TAILSCALE_IP`:47990"
           Write-Host ""
-          Write-Host "=============================================="
-          Write-Host ""
-
+          Write-Host "======================================"
 
       - name: Keep PC Running
         shell: powershell
         run: |
-
           while ($true) {
-
-            $service = Get-Service `
-              -Name "SunshineService" `
+            $process = Get-Process sunshine `
               -ErrorAction SilentlyContinue
 
-            if (-not $service) {
-              Write-Host "Serviço Sunshine não encontrado."
-            }
-            elseif ($service.Status -ne "Running") {
-
+            if (-not $process) {
               Write-Host "Sunshine parou. Reiniciando..."
 
-              Start-Service `
-                -Name "SunshineService" `
-                -ErrorAction SilentlyContinue
+              $paths = @(
+                "$env:ProgramFiles\Sunshine\sunshine.exe",
+                "$env:ProgramFiles\Sunshine\bin\sunshine.exe"
+              )
+
+              $sunshine = $paths |
+                Where-Object { Test-Path $_ } |
+                Select-Object -First 1
+
+              if ($sunshine) {
+                Start-Process $sunshine
+              }
             }
 
             Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Sunshine ativo"
 
             Start-Sleep -Seconds 300
           }
+          
