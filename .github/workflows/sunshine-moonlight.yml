@@ -84,7 +84,7 @@ jobs:
             throw "Falha ao instalar Sunshine."
           }
 
-            - name: Configure Sunshine CSRF
+          - name: Configure Sunshine CSRF
         shell: powershell
         run: |
           $ip = $env:TAILSCALE_IP
