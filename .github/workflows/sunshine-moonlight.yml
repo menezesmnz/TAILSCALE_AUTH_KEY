@@ -1,0 +1,129 @@
+name: Windows Cloud PC - Sunshine Moonlight
+
+on:
+  workflow_dispatch:
+
+jobs:
+  moonlight:
+    name: Start Sunshine...
+    runs-on: windows-latest
+    timeout-minutes: 10080
+
+    steps:
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\tailscale.msi"
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+
+          Start-Process msiexec.exe `
+            -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" `
+            -Wait
+
+          Remove-Item $installer -Force
+
+      - name: Connect Tailscale
+        shell: powershell
+        run: |
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey="${{ secrets.TAILSCALE_AUTH_KEY }}" `
+            --hostname="moonlight-$env:GITHUB_RUN_ID"
+
+          $ip = $null
+
+          for ($i = 1; $i -le 20; $i++) {
+            $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
+
+            if ($ip) {
+              break
+            }
+
+            Start-Sleep -Seconds 3
+          }
+
+          if (-not $ip) {
+            throw "Não foi possível obter o IP do Tailscale."
+          }
+
+          "TAILSCALE_IP=$ip" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "======================================"
+          Write-Host "TAILSCALE IP: $ip"
+          Write-Host "======================================"
+
+      - name: Install Sunshine
+        shell: powershell
+        run: |
+          $url = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-windows-installer.exe"
+          $installer = "$env:TEMP\sunshine.exe"
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+
+          Start-Process $installer `
+            -ArgumentList "/install" `
+            -Wait
+
+          Remove-Item $installer -Force
+
+      - name: Start Sunshine
+        shell: powershell
+        run: |
+          $sunshine = @(
+            "$env:ProgramFiles\Sunshine\sunshine.exe",
+            "$env:ProgramFiles\Sunshine\sunshine.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $sunshine) {
+            $sunshine = Get-ChildItem `
+              -Path "$env:ProgramFiles" `
+              -Filter "sunshine.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+
+          if (-not $sunshine) {
+            throw "sunshine.exe não foi encontrado."
+          }
+
+          Start-Process $sunshine
+
+          Start-Sleep -Seconds 10
+
+          if (-not (Get-Process sunshine -ErrorAction SilentlyContinue)) {
+            throw "Sunshine não iniciou."
+          }
+
+          Write-Host "Sunshine está rodando."
+
+      - name: Show Connection Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "       MOONLIGHT / SUNSHINE"
+          Write-Host "=============================================="
+          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "No Moonlight, adicione:"
+          Write-Host "$env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "Painel Sunshine:"
+          Write-Host "https://$env:TAILSCALE_IP:47990"
+          Write-Host "=============================================="
+          Write-Host ""
+
+      - name: Keep PC Running
+        shell: powershell
+        run: |
+          while ($true) {
+            if (-not (Get-Process sunshine -ErrorAction SilentlyContinue)) {
+              Write-Host "Sunshine parou. Reiniciando..."
+              Start-Process "sunshine.exe"
+            }
+
+            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Sunshine ativo"
+            Start-Sleep -Seconds 300
+          }
