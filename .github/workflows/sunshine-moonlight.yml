@@ -95,9 +95,9 @@ jobs:
       - name: Configure Sunshine CSRF
         shell: powershell
         run: |
-          $ip = $env:TAILSCALE_IP
+          $ip = [string]$env:TAILSCALE_IP
 
-          if (-not $ip) {
+          if ([string]::IsNullOrWhiteSpace($ip)) {
             throw "IP do Tailscale não encontrado."
           }
 
@@ -105,34 +105,57 @@ jobs:
           $configFile = "$configDir\sunshine.conf"
 
           New-Item -ItemType Directory `
-            -Force -Path $configDir | Out-Null
+            -Force `
+            -Path $configDir | Out-Null
 
           $origin = "https://${ip}:47990"
 
-          # CORREÇÃO: garantir que $content seja uma string
           [string]$content = ""
 
-          if (Test-Path $configFile) {
+          if (Test-Path -LiteralPath $configFile) {
             $content = [string](Get-Content `
-              $configFile `
+              -LiteralPath $configFile `
               -Raw `
               -ErrorAction SilentlyContinue)
+
+            if ($null -eq $content) {
+              $content = ""
+            }
           }
 
-          $content = $content -replace `
-            '(?m)^\s*csrf_allowed_origins\s*=.*\r?\n?', ''
+          $content = [regex]::Replace(
+            $content,
+            '(?m)^\s*csrf_allowed_origins\s*=.*\r?\n?',
+            ''
+          )
 
-          # CORREÇÃO: agora TrimEnd() é aplicado em uma string
-          $content = ([string]$content).TrimEnd() +
-            "`r`ncsrf_allowed_origins = $origin`r`n"
+          $content = $content.TrimEnd()
 
-          Set-Content -Path $configFile `
-            -Value $content -Encoding utf8
+          $content += "`r`ncsrf_allowed_origins = $origin`r`n"
+
+          Set-Content `
+            -LiteralPath $configFile `
+            -Value $content `
+            -Encoding UTF8
 
           Write-Host "CSRF configurado: $origin"
           Write-Host "Arquivo: $configFile"
-          Select-String -Path $configFile `
-            -Pattern "csrf_allowed_origins"
+          Write-Host ""
+
+          Get-Content -LiteralPath $configFile |
+            Select-String -Pattern "csrf_allowed_origins"
+
+          # O instalador pode iniciar o Sunshine automaticamente.
+          # Encerrar o processo força o próximo passo a iniciar
+          # o Sunshine novamente usando a configuração nova.
+
+          Get-Process sunshine `
+            -ErrorAction SilentlyContinue |
+            Stop-Process -Force
+
+          Start-Sleep -Seconds 3
+
+          Write-Host "Sunshine encerrado para recarregar a configuração."
 
       - name: Configure Windows Firewall
         shell: powershell
