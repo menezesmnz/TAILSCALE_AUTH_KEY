@@ -5,11 +5,12 @@ on:
 
 jobs:
   moonlight:
-    name: Start Sunshine...
+    name: Start Sunshine Moonlight
     runs-on: windows-latest
     timeout-minutes: 10080
 
     steps:
+
       - name: Install Tailscale
         shell: powershell
         run: |
@@ -24,6 +25,7 @@ jobs:
 
           Remove-Item $installer -Force
 
+
       - name: Connect Tailscale
         shell: powershell
         run: |
@@ -34,6 +36,7 @@ jobs:
           $ip = $null
 
           for ($i = 1; $i -le 20; $i++) {
+
             $ip = (& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4).Trim()
 
             if ($ip) {
@@ -53,6 +56,7 @@ jobs:
           Write-Host "TAILSCALE IP: $ip"
           Write-Host "======================================"
 
+
       - name: Install Sunshine
         shell: powershell
         run: |
@@ -67,63 +71,152 @@ jobs:
 
           Remove-Item $installer -Force
 
+
+      - name: Configure Sunshine CSRF
+        shell: powershell
+        run: |
+
+          $configDir = "$env:ProgramFiles\Sunshine\config"
+          $configFile = "$configDir\sunshine.conf"
+
+          Write-Host "Configurando Sunshine..."
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $configDir | Out-Null
+
+          # Para o serviço antes de alterar a configuração
+          Stop-Service `
+            -Name "SunshineService" `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Start-Sleep -Seconds 3
+
+          # Remove configuração CSRF anterior, caso exista
+          if (Test-Path $configFile) {
+
+            $content = Get-Content $configFile
+
+            $content = $content | Where-Object {
+              $_ -notmatch '^\s*csrf_allowed_origins\s*='
+            }
+
+            Set-Content `
+              -Path $configFile `
+              -Value $content `
+              -Encoding UTF8
+          }
+
+          # Permite acesso pelo IP do Tailscale
+          Add-Content `
+            -Path $configFile `
+            -Value "csrf_allowed_origins = https://$env:TAILSCALE_IP:47990"
+
+          Write-Host "CSRF configurado para:"
+          Write-Host "https://$env:TAILSCALE_IP:47990"
+
+
+      - name: Configure Windows Firewall
+        shell: powershell
+        run: |
+
+          Write-Host "Configurando Firewall..."
+
+          New-NetFirewallRule `
+            -DisplayName "Sunshine TCP" `
+            -Direction Inbound `
+            -Action Allow `
+            -Protocol TCP `
+            -LocalPort 47984-47990,48010 `
+            -ErrorAction SilentlyContinue
+
+          New-NetFirewallRule `
+            -DisplayName "Sunshine UDP" `
+            -Direction Inbound `
+            -Action Allow `
+            -Protocol UDP `
+            -LocalPort 47998-48000,48002 `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "Firewall configurado."
+
+
       - name: Start Sunshine
         shell: powershell
         run: |
-          $sunshine = @(
-            "$env:ProgramFiles\Sunshine\sunshine.exe",
-            "$env:ProgramFiles\Sunshine\bin\sunshine.exe"
-          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-          if (-not $sunshine) {
-            $sunshine = Get-ChildItem `
-              -Path "$env:ProgramFiles" `
-              -Filter "sunshine.exe" `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
+          Write-Host "Iniciando Sunshine..."
 
-          if (-not $sunshine) {
-            throw "sunshine.exe não foi encontrado."
-          }
-
-          Start-Process $sunshine
+          Start-Service `
+            -Name "SunshineService" `
+            -ErrorAction Stop
 
           Start-Sleep -Seconds 10
 
-          if (-not (Get-Process sunshine -ErrorAction SilentlyContinue)) {
-            throw "Sunshine não iniciou."
+          $service = Get-Service `
+            -Name "SunshineService" `
+            -ErrorAction SilentlyContinue
+
+          if (-not $service) {
+            throw "Serviço Sunshine não encontrado."
           }
 
+          if ($service.Status -ne "Running") {
+            throw "Sunshine não iniciou corretamente."
+          }
+
+          Write-Host "======================================"
           Write-Host "Sunshine está rodando."
+          Write-Host "======================================"
+
 
       - name: Show Connection Information
         shell: powershell
         run: |
+
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "       MOONLIGHT / SUNSHINE"
+          Write-Host "          MOONLIGHT / SUNSHINE"
           Write-Host "=============================================="
-          Write-Host "IP Tailscale: $env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "IP Tailscale:"
+          Write-Host "$env:TAILSCALE_IP"
           Write-Host ""
           Write-Host "No Moonlight, adicione:"
           Write-Host "$env:TAILSCALE_IP"
           Write-Host ""
           Write-Host "Painel Sunshine:"
           Write-Host "https://$env:TAILSCALE_IP:47990"
+          Write-Host ""
           Write-Host "=============================================="
           Write-Host ""
+
 
       - name: Keep PC Running
         shell: powershell
         run: |
+
           while ($true) {
-            if (-not (Get-Process sunshine -ErrorAction SilentlyContinue)) {
+
+            $service = Get-Service `
+              -Name "SunshineService" `
+              -ErrorAction SilentlyContinue
+
+            if (-not $service) {
+              Write-Host "Serviço Sunshine não encontrado."
+            }
+            elseif ($service.Status -ne "Running") {
+
               Write-Host "Sunshine parou. Reiniciando..."
-              Start-Process "sunshine.exe"
+
+              Start-Service `
+                -Name "SunshineService" `
+                -ErrorAction SilentlyContinue
             }
 
             Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Sunshine ativo"
+
             Start-Sleep -Seconds 300
           }
