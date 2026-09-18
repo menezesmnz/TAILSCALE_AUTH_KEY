@@ -56,13 +56,13 @@ jobs:
       - name: Install Sunshine
         shell: powershell
         run: |
-          $url = "https://github.com/LizardByte/Sunshine/releases/latest/download/sunshine-windows-installer.exe"
-          $installer = "$env:TEMP\sunshine.exe"
+          $url = "https://github.com/LizardByte/Sunshine/releases/latest/download/Sunshine-Windows-AMD64-installer.msi"
+          $installer = "$env:TEMP\sunshine.msi"
 
           Invoke-WebRequest -Uri $url -OutFile $installer
 
-          Start-Process $installer `
-            -ArgumentList "/install" `
+          Start-Process msiexec.exe `
+            -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" `
             -Wait
 
           Remove-Item $installer -Force
@@ -72,7 +72,7 @@ jobs:
         run: |
           $sunshine = @(
             "$env:ProgramFiles\Sunshine\sunshine.exe",
-            "$env:ProgramFiles\Sunshine\sunshine.exe"
+            "$env:ProgramFiles\Sunshine\bin\sunshine.exe"
           ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
           if (-not $sunshine) {
