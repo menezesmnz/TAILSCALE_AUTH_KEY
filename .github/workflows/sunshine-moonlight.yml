@@ -8,7 +8,7 @@ jobs:
   moonlight:
     name: Start Sunshine Moonlight
     runs-on: windows-latest
-    timeout-minutes: 20090
+    timeout-minutes: 10080
 
     steps:
       - name: Install Tailscale
@@ -19,11 +19,15 @@ jobs:
 
           Invoke-WebRequest -Uri $url -OutFile $installer
 
-          Start-Process msiexec.exe `
+          $process = Start-Process msiexec.exe `
             -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" `
-            -Wait
+            -Wait -PassThru
 
-          Remove-Item $installer -Force
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+          if ($process.ExitCode -ne 0) {
+            throw "Falha ao instalar Tailscale."
+          }
 
       - name: Connect Tailscale
         shell: powershell
@@ -44,13 +48,18 @@ jobs:
             --authkey="$env:TAILSCALE_AUTH_KEY" `
             --hostname="moonlight-$env:GITHUB_RUN_ID"
 
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao conectar ao Tailscale."
+          }
+
           $ip = $null
 
           for ($i = 1; $i -le 30; $i++) {
-            $ip = (& $tailscale ip -4 2>$null |
-              Select-Object -First 1).Trim()
+            $result = & $tailscale ip -4 2>$null
+            $ip = ($result | Select-Object -First 1)
 
             if ($ip) {
+              $ip = $ip.Trim()
               break
             }
 
@@ -84,7 +93,7 @@ jobs:
             throw "Falha ao instalar Sunshine."
           }
 
-          - name: Configure Sunshine CSRF
+      - name: Configure Sunshine CSRF
         shell: powershell
         run: |
           $ip = $env:TAILSCALE_IP
@@ -102,6 +111,7 @@ jobs:
           $origin = "https://${ip}:47990"
 
           $content = ""
+
           if (Test-Path $configFile) {
             $content = Get-Content $configFile -Raw
           }
@@ -109,7 +119,16 @@ jobs:
           $content = $content -replace `
             '(?m)^\s*csrf_allowed_origins\s*=.*\r?\n?', ''
 
-          $content += "`r`ncsrf_allowed_origins = $origin`r`
+          $content = $content.TrimEnd() +
+            "`r`ncsrf_allowed_origins = $origin`r`n"
+
+          Set-Content -Path $configFile `
+            -Value $content -Encoding utf8
+
+          Write-Host "CSRF configurado: $origin"
+          Write-Host "Arquivo: $configFile"
+          Select-String -Path $configFile `
+            -Pattern "csrf_allowed_origins"
 
       - name: Configure Windows Firewall
         shell: powershell
@@ -159,7 +178,7 @@ jobs:
 
           Write-Host "Executável: $sunshine"
 
-          Start-Process $sunshine
+          Start-Process -FilePath $sunshine
 
           Start-Sleep -Seconds 10
 
@@ -209,7 +228,7 @@ jobs:
                 Select-Object -First 1
 
               if ($sunshine) {
-                Start-Process $sunshine
+                Start-Process -FilePath $sunshine
               }
             }
 
